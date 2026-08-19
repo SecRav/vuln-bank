@@ -1075,6 +1075,38 @@ jobs:
           .sub:first-child{margin-top:0}
           .help{font-size:13px;color:#374151;margin:0}
           footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
+          /* Print stylesheet: browser Print > Save as PDF renders a clean,
+             multi-page report. Keeps near-screen font sizes (no shrinking),
+             hides interactive controls, lets tables flow across pages, repeats
+             table headers on each page, and only avoids breaking inside a
+             single table row (never whole sections, which creates blanks). */
+          @media print {
+            body{background:#fff;font-size:13px}
+            .topbar{background:#111827;-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:16px 0 12px}
+            .topbar h1{font-size:18px}
+            .controls,#search,.fbtn,.controls-card{display:none!important}
+            .wrap{max-width:100%;padding:0 8px}
+            main.wrap{padding-top:12px;padding-bottom:16px}
+            .stats{grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
+            .stat{padding:8px;border-radius:8px;box-shadow:none}
+            .stat .n{font-size:20px}
+            .stat .l{font-size:9px;margin-top:2px}
+            .card{border-radius:8px;padding:12px 10px;margin-bottom:10px;box-shadow:none;border-color:#cbd5e1}
+            .card table{width:100%}
+            .card h2{font-size:13px;margin-bottom:8px}
+            .card h2 .count{font-size:10px}
+            table{page-break-inside:auto}
+            thead{display:table-header-group}
+            th,td{padding:6px 8px;font-size:12px}
+            tr{break-inside:avoid-page;page-break-inside:avoid}
+            .mono{word-break:break-word}
+            .plain{font-size:12px;margin-top:4px;padding-top:4px}
+            .sub{font-size:11px;margin:12px 0 6px}
+            .help{font-size:12px}
+            .warn{margin-top:6px;padding:8px 10px;font-size:12px}
+            a{color:#111827;text-decoration:none}
+            footer{padding-bottom:12px}
+          }
           """
 
           JS = """
@@ -1119,7 +1151,7 @@ jobs:
             <div class="card"><h2>Scanner status</h2><div class="chips">%s</div>%s</div>
             <div class="stats">%s</div>
             %s
-            <div class="card">
+            <div class="card controls-card">
               <div class="controls">
                 <input id="search" type="text" placeholder="Search findings by rule, CVE, file, package...">
                 <button class="fbtn active" data-sev="all">All</button>
