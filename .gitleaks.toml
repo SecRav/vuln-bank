@@ -1,0 +1,21 @@
+# Gitleaks configuration for vuln-bank.
+# Extends the default rules. Adds an allowlist for known test fixtures and
+# placeholder examples in this repo so they are not reported as leaked
+# credentials. Real secret patterns (AWS keys, connection strings, tokens)
+# still fire.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and placeholder examples (not real credentials)"
+regexes = [
+  # Test fixture API keys used in tests/test_merchant_payments.py (vk_<64 hex>)
+  '''vk_[0-9a-f]{64}''',
+  # Placeholder examples in the README
+  '''cafebabe:deadbeef''',
+  '''8ae31cacf141''',
+  # Dummy credentials used by the vulnerable-bank seed data
+  '''bookstore123''',
+  '''pwnshop123''',
+]

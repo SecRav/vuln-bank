@@ -280,9 +280,26 @@ jobs:
           # signal) - treat that as success here; the report carries the
           # findings. Without `|| true` the step shows as failed and looks
           # like a crash even though checkov.json was written fine.
+          # The workflow's own generated report artifacts are skipped so the
+          # scanners never flag each other's output (e.g. gitleaks.json holds
+          # masked secrets -> would otherwise self-trigger CKV_SECRET_6).
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
+            --skip-path gitleaks.json \
+            --skip-path semgrep.json \
+            --skip-path trivy.json \
+            --skip-path trivy-image.json \
+            --skip-path checkov.json \
+            --skip-path gitleaks.sarif \
+            --skip-path semgrep.sarif \
+            --skip-path trivy.sarif \
+            --skip-path trivy-image.sarif \
+            --skip-path checkov.sarif \
+            --skip-path security-report.html \
+            --skip-path security-report.md \
+            --skip-path counts.txt \
+            --skip-path semgrep-mode.txt \
             --output json > checkov.json || true
 
       - name: Checkov scan (SARIF for Code Scanning)
@@ -295,6 +312,20 @@ jobs:
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
+            --skip-path gitleaks.json \
+            --skip-path semgrep.json \
+            --skip-path trivy.json \
+            --skip-path trivy-image.json \
+            --skip-path checkov.json \
+            --skip-path gitleaks.sarif \
+            --skip-path semgrep.sarif \
+            --skip-path trivy.sarif \
+            --skip-path trivy-image.sarif \
+            --skip-path checkov.sarif \
+            --skip-path security-report.html \
+            --skip-path security-report.md \
+            --skip-path counts.txt \
+            --skip-path semgrep-mode.txt \
             --output sarif \
             --output-file-path checkov.sarif > /dev/null 2>&1 || true
           if [ ! -s checkov.sarif ] && [ -s results.sarif ]; then
@@ -354,6 +385,20 @@ jobs:
             --ignore-unfixed \
             --skip-dirs valuehrmapi/Logs \
             --skip-dirs valuehrmapi/wwwroot/uploads \
+            --skip-files gitleaks.json \
+            --skip-files semgrep.json \
+            --skip-files trivy.json \
+            --skip-files trivy-image.json \
+            --skip-files checkov.json \
+            --skip-files gitleaks.sarif \
+            --skip-files semgrep.sarif \
+            --skip-files trivy.sarif \
+            --skip-files trivy-image.sarif \
+            --skip-files checkov.sarif \
+            --skip-files security-report.html \
+            --skip-files security-report.md \
+            --skip-files counts.txt \
+            --skip-files semgrep-mode.txt \
             --format json \
             --output trivy.json \
             .
@@ -367,6 +412,20 @@ jobs:
             --ignore-unfixed \
             --skip-dirs valuehrmapi/Logs \
             --skip-dirs valuehrmapi/wwwroot/uploads \
+            --skip-files gitleaks.json \
+            --skip-files semgrep.json \
+            --skip-files trivy.json \
+            --skip-files trivy-image.json \
+            --skip-files checkov.json \
+            --skip-files gitleaks.sarif \
+            --skip-files semgrep.sarif \
+            --skip-files trivy.sarif \
+            --skip-files trivy-image.sarif \
+            --skip-files checkov.sarif \
+            --skip-files security-report.html \
+            --skip-files security-report.md \
+            --skip-files counts.txt \
+            --skip-files semgrep-mode.txt \
             --format sarif \
             --output trivy.sarif \
             .
