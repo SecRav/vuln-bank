@@ -1,53 +1,38 @@
 # ---------------------------------------------------------------------------
-# Security Scan (Semgrep + Gitleaks + Trivy) - NON-BLOCKING
+# Security Scan - Semgrep + Gitleaks + Trivy + Checkov
 #
-# What it does:
-#   * Runs on every push to any branch, on every pull request, daily on a
-#     schedule (dependency CVEs are published after the last commit), and on
-#     manual dispatch.
-#   * Scans with five free, no-login tools:
-#       - Semgrep (OSS)  : cross-stack SAST (C#, Python, JS/TS, Java, Go,
-#                          Ruby, PHP + CI & Dockerfile rules), captures
-#                          ERROR + WARNING severities (full picture)
-#       - Gitleaks       : leaked secrets / hardcoded credentials
-#       - Trivy (binary) : dependency vulns + Dockerfile misconfig, captures
-#                          LOW->CRITICAL (source scan, auto-detects ecosystem:
-#                          NuGet, npm, pip, Maven, Go, etc.)
-#       - Trivy (image)  : container image scan (OS packages + runtime deps)
-#       - Checkov (OSS)  : IaC misconfigs - auto-detects framework
-#                          (Dockerfile, GitHub Actions, Terraform, K8s, ...),
-#                          captures all severities (missing severities resolved
-#                          from a known check_id mapping)
-#   * Portable template: every step auto-detects the tech stack (no hardcoded
-#     project paths or languages), so this file can be dropped into any
-#     repository. Steps that do not apply are skipped automatically.
-#   * Produces:
-#       - GitHub Code Scanning alerts (SARIF upload, best-effort; requires GHAS
-#         on private repos)
-#       - A combined markdown report + a modern HTML report (searchable,
-#         severity-filtered, with fix guidance) uploaded as an artifact. The
-#         HTML report shows ALL severities for executive/compliance review.
-#       - A concise summary comment on pull requests
-#       - A summary on the workflow run page (job summary)
-#       - GitHub Issues on the default branch: one issue per finding (all
-#         severities), labelled with severity, auto-closed when a finding is
-#         fixed, reopened if it regresses. Opening/closing issues notifies repo
-#         watchers.
-#   * NEVER fails the build and NEVER blocks merge or deployment. Every scan
-#     step is continue-on-error.
+# Runs on every push, every PR, daily (cron), and on manual dispatch.
+# Drop-in portable: no hardcoded paths or languages; steps that do not apply
+# to a repo are skipped automatically.
 #
-# False-positive tuning knobs:
-#   - Semgrep severity  : all severities are captured so the report is complete.
-#                         To reduce noise, filter below by changing
-#                         `--severity ERROR --severity WARNING` to
-#                         `--severity ERROR`.
-#   - Trivy severity    : change `--severity LOW,CRITICAL` to `HIGH,CRITICAL`
-#                         to drop low/medium (less complete).
-#   - Trivy unfixed     : remove `--ignore-unfixed` to include CVEs with no fix
-#                         yet (noisier, but complete).
-#   - Add rules/ignore paths in .semgrepignore (repo root).
+# Scanners (all free, no login):
+#   - Semgrep        : SAST, ERROR + WARNING, OSS packs + .semgrep/custom/
+#   - Gitleaks       : leaked secrets (defaults, or .gitleaks.toml if present)
+#   - Trivy fs       : dependency CVEs + misconfig, LOW..CRITICAL
+#   - Trivy image    : container image scan (skipped if no Dockerfile)
+#   - Checkov        : IaC misconfigs (Dockerfile, Actions, Terraform, ...)
+#
+# Outputs:
+#   - SARIF -> GitHub Code Scanning (best-effort, needs GHAS on private repos)
+#   - security-report.md / security-report.html artifact (score, legend,
+#     plain-language explanations, priority per finding)
+#   - PR summary comment (PRs) and run summary
+#   - GitHub Issues per finding (default branch): auto-closed when fixed,
+#     reopened if it regresses. Human-closed issues are never reopened.
+#   - Teams alert on Critical/High findings (optional: set TEAMS_WEBHOOK_URL
+#     repo secret; without it the step is skipped)
+#
+# The workflow never fails the build; every scan step is continue-on-error.
+#
+# Noise tuning:
+#   - Semgrep severity: `--severity ERROR --severity WARNING` -> drop WARNING
+#     to report ERROR only
+#   - Trivy severity: `--severity LOW,CRITICAL` -> `HIGH,CRITICAL` to drop LOW
+#   - Trivy: remove `--ignore-unfixed` to include CVEs with no fix available
+#   - Semgrep ignores: .semgrepignore (repo root)
+#   - Gitleaks allowlist: .gitleaks.toml [allowlist] section (extends defaults)
 # ---------------------------------------------------------------------------
-name: Security Scan (non-blocking)
+name: Security Scan - Action Required
 
 on:
   push:
@@ -93,15 +78,9 @@ jobs:
 
       # ------------------------------------------------------------------
       # Semgrep (SAST)
-      #   * When a SEMGREP_APP_TOKEN secret is configured (free tier), the
-      #     scan runs with Semgrep Pro rules for deeper coverage.
-      #   * If the token is absent, or Semgrep rejects it (e.g. free-tier
-      #     usage limit reached on this repo), the scan AUTOMATICALLY falls
-      #     back to the OSS packs + the custom rules in .semgrep/custom/.
-      #     There is never a silent failure: semgrep-mode.txt records which
-      #     mode ran, and the report states it explicitly so you know when a
-      #     repo hit its Pro limit.
-      #   * The custom rules are always included in every mode.
+      # Runs with Semgrep Pro rules when SEMGREP_APP_TOKEN is set; falls
+      # back to OSS packs + .semgrep/custom/ otherwise. The active mode is
+      # recorded in semgrep-mode.txt and shown in the report.
       # ------------------------------------------------------------------
       - name: Install Semgrep
         continue-on-error: true
@@ -115,9 +94,7 @@ jobs:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         run: |
           set -uo pipefail
-          # Custom rules are part of this workflow's coverage; include them when
-          # present (they ship in .semgrep/custom/). If the folder is missing
-          # (workflow copied into a repo without the rules), degrade gracefully.
+          # Custom rules in .semgrep/custom/ are included when present.
           CUSTOM=""
           [ -d .semgrep/custom ] && CUSTOM="--config .semgrep/custom/"
           MODE="oss"
@@ -139,7 +116,7 @@ jobs:
               echo "::endgroup::"
             else
               echo "::endgroup::"
-              echo "Semgrep Pro scan failed (likely free-tier usage limit) - falling back to OSS packs + custom rules."
+              echo "Semgrep Pro scan failed - falling back to OSS packs + custom rules."
               MODE="oss-fallback"
             fi
           fi
@@ -173,10 +150,8 @@ jobs:
           echo "SEMGREP_MODE=$MODE" > semgrep-mode.txt
           echo "Semgrep mode: $MODE"
 
-      # SARIF run only feeds GitHub Code Scanning (best-effort). Drop this step
-      # if Code Scanning is not available on this repo (private repo without
-      # Advanced Security) to save ~2-3 min per run. Mirrors the mode decided
-      # by the JSON step above so both reports agree.
+      # SARIF feeds GitHub Code Scanning (best-effort). Reuses the mode
+      # decided by the JSON step so both reports agree.
       - name: Semgrep scan (SARIF for Code Scanning, Pro with OSS fallback)
         continue-on-error: true
         env:
@@ -245,9 +220,7 @@ jobs:
       - name: Gitleaks scan (JSON report)
         continue-on-error: true
         run: |
-          # .gitleaks.toml is optional - it extends the default rules. When
-          # absent (e.g. fresh copy of this workflow in a new repo), fall back
-          # to gitleaks' built-in default rules so the scan still runs.
+          # .gitleaks.toml is optional; without it the default rules run.
           if [ -f .gitleaks.toml ]; then
             ./gitleaks dir --config .gitleaks.toml --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn .
           else
@@ -276,13 +249,9 @@ jobs:
       - name: Checkov scan (JSON report)
         continue-on-error: true
         run: |
-          # checkov exits non-zero when failed checks are found (its normal
-          # signal) - treat that as success here; the report carries the
-          # findings. Without `|| true` the step shows as failed and looks
-          # like a crash even though checkov.json was written fine.
-          # The workflow's own generated report artifacts are skipped so the
-          # scanners never flag each other's output (e.g. gitleaks.json holds
-          # masked secrets -> would otherwise self-trigger CKV_SECRET_6).
+          # checkov exits non-zero when findings exist; `|| true` keeps the
+          # step green. Generated report artifacts are skipped so scanners
+          # never flag each other's output.
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
@@ -305,10 +274,8 @@ jobs:
       - name: Checkov scan (SARIF for Code Scanning)
         continue-on-error: true
         run: |
-          # checkov writes `-o sarif` to a file (default ./results.sarif) while
-          # the banner/summary goes to stdout. Map the SARIF format to
-          # checkov.sarif via the per-format output-file-path, and drop the
-          # console output so checkov.sarif contains valid SARIF, not a banner.
+          # checkov writes SARIF to a file while the banner goes to stdout;
+          # redirect stdout so checkov.sarif contains valid SARIF only.
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
@@ -337,19 +304,16 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # Trivy (deps + misconfig) - pinned release, SHA256-verified binary.
-      # NOTE: we deliberately do NOT use aquasecurity/trivy-action - it was
-      # compromised (CVE-2026-33634); the verified binary avoids that.
+      # Trivy (deps + misconfig) - pinned, checksum-verified binary.
+      # Do not swap for aquasecurity/trivy-action (compromised,
+      # CVE-2026-33634).
       # ------------------------------------------------------------------
       - name: Install Trivy
         continue-on-error: true
         run: |
           set -euo pipefail
-          # The binary is ~47MB and GitHub release downloads can stall on slow
-          # runners. Retry aggressively and give the download a generous
-          # deadline so a slow transfer no longer silently fails. If it still
-          # fails, the report shows "NO OUTPUT" for Trivy rather than a fake
-          # clean bill.
+          # Retries + generous deadline: release downloads can stall on slow
+          # runners. On failure the report shows Trivy as "NO OUTPUT".
           curl -fSL --retry 5 --retry-delay 5 --retry-all-errors \
             --connect-timeout 30 --max-time 300 \
             -o trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
@@ -360,10 +324,8 @@ jobs:
           tar -xzf trivy.tar.gz
           ./trivy --version
 
-            # Restore NuGet deps so Trivy can scan them. Trivy reads
-      # obj/project.assets.json (generated by restore) - it cannot resolve a
-      # plain .csproj on its own. Only runs when a .NET project is present;
-      # skipped automatically for other tech stacks.
+      # Trivy reads obj/project.assets.json produced by `dotnet restore` and
+      # cannot resolve a plain .csproj on its own. .NET repos only.
       - name: Restore NuGet packages (for Trivy)
         if: hashFiles('**/*.sln', '**/*.csproj', '**/*.fsproj', '**/*.vbproj') != ''
         continue-on-error: true
@@ -431,10 +393,8 @@ jobs:
             .
 
             # ------------------------------------------------------------------
-      # Trivy image - scans the built container image (OS packages + runtime
-      # deps), complementing the fs scan above (source deps). Generic: finds
-      # any Dockerfile in the repo, so it works for any stack that ships a
-      # container. Skipped entirely if no Dockerfile exists.
+      # Trivy image - scans the built container image (OS + runtime deps).
+      # Skipped when the repo has no Dockerfile.
       # ------------------------------------------------------------------
       - name: Build container image (for Trivy image scan)
         if: hashFiles('**/Dockerfile*') != ''
@@ -470,8 +430,8 @@ jobs:
             hrm-backend:scan
 
       # ------------------------------------------------------------------
-      # Upload results to GitHub Code Scanning (best-effort; requires GHAS /
-      # Code Security on private repos). Never blocks anything.
+      # Upload SARIF to GitHub Code Scanning (needs GHAS on private repos).
+      # Best-effort; failures are ignored.
       # ------------------------------------------------------------------
       - name: Upload Semgrep SARIF
         if: always()
@@ -636,12 +596,9 @@ jobs:
           tri_findings = parse_trivy('trivy.json', 'Trivy (deps / misconfig)')
           tri_img_findings = parse_trivy('trivy-image.json', 'Trivy (container image)')
 
-          # Checkov v3 JSON output is a LIST of per-check-type dicts
-          # (e.g. [{check_type: dockerfile, results: {...}}, ...]). Older
-          # versions emit a single dict keyed by check_type. We handle both.
-          # Also: without a Bridgecrew API key checkov leaves `severity: null`
-          # for many checks, so we resolve a sensible severity from a known
-          # mapping below (never silently drop a failed check).
+          # Checkov v3 emits a list of per-check-type dicts; older versions a
+          # single dict. Both are handled. Without a Bridgecrew API key many
+          # checks have severity: null - resolved from a known check_id map.
           def iter_checkov_failed():
               sections = ckv if isinstance(ckv, list) else ([ckv] if isinstance(ckv, dict) else [])
               for section in sections:
@@ -694,9 +651,8 @@ jobs:
                       tri_img_findings, ckv_findings):
               lst.sort(key=lambda x: (sev_order.get(x['severity'], 9), x['id']))
 
-          # Plain-language explanation for non-technical readers, keyed by rule
-          # prefix/type so the mappings apply identically in every repo. If a
-          # rule is unknown it falls back to a generic message from the finding.
+          # Plain-language explanation per rule prefix, identical in every
+          # repo. Unknown rules fall back to a generic message.
           def plain_language(f):
               s = f['severity']
               rid = f['id']
@@ -742,12 +698,9 @@ jobs:
           all_findings = (sem_findings + gil_findings + tri_findings +
                           tri_img_findings + ckv_findings)
 
-          # Veracode-style security score (0-100): starts at 100, deductions
-          # weighted by severity so a single critical hurts far more than many
-          # low-severity notes. Weights are deliberately gentle so the score
-          # stays useful (shows improvement over time) instead of zeroing out
-          # at the first real finding. Scored on the FULL picture (incl. LOWs
-          # that are hidden from the report) so hiding noise can't inflate it.
+          # Security score 0-100: starts at 100, deducts per finding
+          # (Critical -8, High -4, Medium -1, Low -0.5). Scored on the full
+          # picture including LOWs hidden from the report.
           def security_score():
               def w(f):
                   s = f['severity']
@@ -770,9 +723,7 @@ jobs:
                    'B' if score >= 70 else 'C' if score >= 55 else
                    'D' if score >= 40 else 'F')
 
-          # LOW-severity findings are captured in the raw artifacts (evidence)
-          # but excluded from the report + issues to avoid noise. Everything
-          # from MEDIUM/WARNING up is shown and tracked.
+          # LOWs are excluded from report + issues (noise); MEDIUM+ shown.
           def keep_in_report(f):
               return f['severity'] not in ('LOW', 'INFO')
 
@@ -783,9 +734,7 @@ jobs:
           ckv_findings = [f for f in ckv_findings if keep_in_report(f)]
           all_findings = [f for f in all_findings if keep_in_report(f)]
 
-          # Attach plain-language explanation + priority to every finding (used
-          # by the HTML report and the GitHub Issues so devs and non-technical
-          # readers get the same guidance).
+          # Attach plain-language explanation + priority to every finding.
           def with_explanation(f):
               f['plain'] = plain_language(f)
               f['priority'] = priority(f)
@@ -804,9 +753,8 @@ jobs:
           tri_img_ok = tri_img is not None
           ckv_ok = isinstance(ckv, (dict, list))
 
-          # Semgrep mode: 'pro' (Pro rules via token) or 'oss'/'oss-fallback'
-          # (OSS packs + .semgrep/custom/ rules). Read from semgrep-mode.txt so
-          # the report always states which mode actually ran.
+          # Semgrep mode: 'pro' (token present) or 'oss'/'oss-fallback'.
+          # Read from semgrep-mode.txt; shown in the report header.
           sem_mode = 'unknown'
           try:
               with open('semgrep-mode.txt', encoding='utf-8') as f:
@@ -862,7 +810,7 @@ jobs:
           report.append('')
           report.append('**Semgrep mode:** `%s`' % sem_mode_label)
           report.append('')
-          report.append('> Non-blocking scan: findings do **not** fail the build or block deployment.')
+          report.append('> Findings require triage: open issues are tracked automatically until they are fixed.')
           report.append('')
           report.append('## Scanner status')
           report.append('')
@@ -890,9 +838,8 @@ jobs:
           report.append('| **Total** | **%d** |' % total)
           report.append('')
 
-          # Plain-language "why it matters" for the most severe findings so a
-          # non-technical reader can understand the impact without diving into
-          # rule IDs. Generic text - applies identically in every repo.
+          # Plain-language "why it matters" per finding type. Non-technical
+          # readers understand the impact without reading rule IDs.
           def why_block():
               criticals = [f for f in all_findings if f['severity'] in ('CRITICAL', 'ERROR')]
               highlights = criticals + [f for f in all_findings if f['severity'] == 'HIGH']
@@ -951,6 +898,42 @@ jobs:
               f.write('SEMGREP=%d GITLEAKS=%d TRIVY=%d TRIVY_IMAGE=%d CHECKOV=%d\n' % (
                   len(sem_findings), len(gil_findings), len(tri_findings),
                   len(tri_img_findings), len(ckv_findings)))
+
+          # ------------------------------------------------------------------
+          # Alert payload (alert.json) for the optional Teams step.
+          # ------------------------------------------------------------------
+          def sev_class(s):
+              if s in ('CRITICAL', 'ERROR'):
+                  return 'critical'
+              if s == 'HIGH':
+                  return 'high'
+              if s in ('MEDIUM', 'WARNING'):
+                  return 'medium'
+              return 'low'
+
+          sev_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+          for f in all_findings:
+              sev_counts[sev_class(f['severity'])] += 1
+          top = sorted(all_findings, key=lambda x: sev_order.get(x['severity'], 9))[:5]
+          run_url = '%s/%s/actions/runs/%s' % (
+              os.environ.get('GITHUB_SERVER_URL', 'https://github.com'),
+              repo or os.environ.get('GITHUB_REPOSITORY', ''),
+              os.environ.get('GITHUB_RUN_ID', ''))
+          alert = {
+              'repo': repo,
+              'branch': branch,
+              'commit': commit[:7],
+              'event': event,
+              'score': score,
+              'grade': grade,
+              'counts': sev_counts,
+              'total': total,
+              'run_url': run_url,
+              'top': [{'severity': f['severity'], 'id': f['id'],
+                       'file': f['file'], 'line': f['line']} for f in top],
+          }
+          with open('alert.json', 'w', encoding='utf-8') as f:
+              json.dump(alert, f, indent=2)
 
           # ------------------------------------------------------------------
           # Modern HTML report (self-contained: no external assets, no tracking)
@@ -1017,10 +1000,8 @@ jobs:
           chips = ''.join('<span class="chip %s">%s</span>' % ('ok' if ok else 'fail', h(name)) for name, ok in scanners)
           warn = ('<div class="warn">WARNING: one or more scanners produced no output. Do not treat this as a clean bill of health - review the workflow run logs.</div>' if not all_ok else '')
 
-          # "How to read this report" card - plain-language severity legend and
-          # glossary so non-technical readers (executives, auditors) can
-          # understand the PDF without security training. Fully generic text,
-          # identical in every repo.
+          # "How to read this report" card - severity legend and glossary
+          # for non-technical readers. Identical in every repo.
           def legend():
               rows = [
                   ('Critical', 'Exploitable today or a leaked credential. Action required immediately - data or systems are at risk.'),
@@ -1222,7 +1203,7 @@ jobs:
             </div>
             %s
           </main>
-          <footer>Generated by the Security Scan workflow &middot; non-blocking, does not affect deployments &middot; %s</footer>
+          <footer>Generated by the Security Scan workflow &middot; findings require triage &middot; %s</footer>
           <script>%s</script>
           </body>
           </html>""" % (h(repo), CSS, h(repo), h(branch), h(commit[:7]), h(event), h(now), h(sem_mode_label), chips, warn, stats, legend(), sections, h(now), JS)
@@ -1255,14 +1236,94 @@ jobs:
             checkov.sarif
             trivy-image.sarif
             semgrep-mode.txt
+            alert.json
           retention-days: 90
           if-no-files-found: warn
 
       # ------------------------------------------------------------------
-      # Sync findings to GitHub Issues - default branch only. Opens one
-      # issue per finding (labels + severity), auto-closes when a finding
-      # is fixed, reopens if it regresses. Opening/closing issues notifies
-      # repo watchers. Requires only `issues: write`.
+      # Microsoft Teams alert (optional) - posts an Adaptive Card on
+      # Critical/High findings. Requires TEAMS_WEBHOOK_URL repo secret.
+      # Default branch only. Alerting failures never fail the scan.
+      # ------------------------------------------------------------------
+      - name: Notify Teams on critical findings
+        if: always() && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys, urllib.request
+
+          url = (os.environ.get('TEAMS_WEBHOOK_URL') or '').strip()
+          if not url:
+              print('TEAMS_WEBHOOK_URL not set - Teams alert skipped (optional).')
+              sys.exit(0)
+
+          try:
+              with open('alert.json', encoding='utf-8') as f:
+                  a = json.load(f)
+          except Exception:
+              print('alert.json missing/unreadable - Teams alert skipped.')
+              sys.exit(0)
+
+          crit = a.get('counts', {}).get('critical', 0)
+          high = a.get('counts', {}).get('high', 0)
+          if crit == 0 and high == 0:
+              print('No Critical/High findings - no Teams alert sent.')
+              sys.exit(0)
+
+          color = 'CC0000' if crit else 'ED8936'
+          top_blocks = []
+          for t in a.get('top', []):
+              loc = t['file'] + (':%s' % t['line'] if t['line'] else '')
+              top_blocks.append({
+                  'type': 'TextBlock', 'wrap': True, 'spacing': 'None',
+                  'text': '**%s** %s | %s' % (t['severity'], t['id'], loc)})
+          card = {
+              'type': 'message',
+              'summary': 'Security scan: %s - score %s/100 (%s) - %d Critical, %d High' % (a['repo'], a['score'], a['grade'], crit, high),
+              'attachments': [{
+                  'contentType': 'application/vnd.microsoft.card.adaptive',
+                  'contentUrl': None,
+                  'content': {
+                      'type': 'AdaptiveCard', 'version': '1.4',
+                      'msteams': {'width': 'Full'},
+                      'body': [
+                          {'type': 'TextBlock', 'wrap': True, 'size': 'Large', 'weight': 'Bolder',
+                           'text': 'Security scan: %s - score %s/100 (%s)' % (a['repo'], a['score'], a['grade'])},
+                          {'type': 'TextBlock', 'wrap': True, 'isSubtle': True, 'spacing': 'None',
+                           'text': 'branch %s - commit %s - %s' % (a['branch'], a['commit'], a['event'])},
+                          {'type': 'FactSet', 'facts': [
+                              {'title': 'Repository', 'value': a['repo']},
+                              {'title': 'Critical', 'value': str(crit)},
+                              {'title': 'High', 'value': str(high)},
+                              {'title': 'Medium', 'value': str(a.get('counts', {}).get('medium', 0))},
+                              {'title': 'Total in report', 'value': str(a.get('total', 0))},
+                          ]},
+                          {'type': 'TextBlock', 'wrap': True, 'weight': 'Bolder',
+                           'text': 'Top findings'},
+                      ] + top_blocks,
+                      'actions': [{
+                          'type': 'Action.OpenUrl',
+                          'title': 'Open scan run (download report artifact)',
+                          'url': a.get('run_url') or 'https://github.com'},
+                      ],
+                  },
+              }],
+          }
+          data = json.dumps(card).encode('utf-8')
+          req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  print('Teams alert sent (HTTP %s).' % resp.status)
+          except Exception as e:
+              print('Teams alert failed (non-blocking): %s' % e)
+          PY
+
+      # ------------------------------------------------------------------
+      # Sync findings to GitHub Issues (default branch only). One issue per
+      # finding; auto-closed when fixed, reopened if regressed. Human-closed
+      # issues stay closed (wontfix/false-positive escape hatch).
       # ------------------------------------------------------------------
       - name: Sync findings to GitHub Issues
         if: always() && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -1528,9 +1589,7 @@ jobs:
 
             console.log(`Issue sync: ${findings.length} findings | created=${created} updated=${updated} reopened=${reopened} closed=${closed}`);
 
-      # ------------------------------------------------------------------
-      # Post / update a concise summary on the PR (only when findings exist)
-      # ------------------------------------------------------------------
+      # Post / update a concise summary on the PR (when findings exist).
       - name: Post PR security summary
         if: always() && github.event_name == 'pull_request' && !github.event.pull_request.draft && !github.event.pull_request.head.repo.fork
         uses: actions/github-script@v7
@@ -1565,7 +1624,7 @@ jobs:
               return;
             }
 
-            const body = `## Security Scan Summary\n\nAutomated non-blocking security scan on \`${refName}\` @ \`${sha7}\`.\n\n| Tool | Findings |\n| --- | --- |\n| Semgrep (SAST) | ${s} |\n| Gitleaks (secrets) | ${g} |\n| Trivy (deps / misconfig) | ${t} |\n| Trivy (container image) | ${ti} |\n| Checkov (IaC) | ${c} |\n| **Total** | **${total}** |\n\n> This scan never blocks merge or deployment. Full details in the [workflow run](${runUrl}) or the \`security-scan-report\` artifact.\n\n${marker}`;
+            const body = `## Security Scan Summary\n\nAutomated security scan on \`${refName}\` @ \`${sha7}\` — findings require triage.\n\n| Tool | Findings |\n| --- | --- |\n| Semgrep (SAST) | ${s} |\n| Gitleaks (secrets) | ${g} |\n| Trivy (deps / misconfig) | ${t} |\n| Trivy (container image) | ${ti} |\n| Checkov (IaC) | ${c} |\n| **Total** | **${total}** |\n\n> Open issues are tracked automatically until fixed. Full details in the [workflow run](${runUrl}) or the \`security-scan-report\` artifact.\n\n${marker}`;
 
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
