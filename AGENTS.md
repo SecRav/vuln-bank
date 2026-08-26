@@ -152,6 +152,11 @@ GitHub Actions → HTTP POST to Power Automate → Adaptive Card appears in Team
    - **Team**: Your team
    - **Channel**: Your channel
 4. Click **Adaptive Card** and paste the JSON body from the `teams-card.json` template (or the template built into the workflow).
+5. **Important:** In the "Post card in a chat or channel" action, set the **Message Body** field to this expression (click the "Expression" tab, don't paste raw JSON):
+   ```
+   {triggerBody()?['attachments']?[0]?['content']}
+   ```
+   This tells Power Automate to extract the Adaptive Card content from the incoming JSON payload. Without this expression, the card won't render.
 
 #### Step 3: Save and get the webhook URL
 1. Click **Save**.
