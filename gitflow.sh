@@ -71,14 +71,15 @@ gh_activate() {
 }
 
 gh_do_add() {
+  set +euo pipefail
   mkdir -p "$GH_CRED_DIR"
   say "\n ${CYAN}GitHub will open in your browser to authorize.${NC}"
   say " Sign in with the account you want to add.\n"
 
   local resp device_code url user_code interval
-  resp=$(curl -fsSL -X POST "https://github.com/login/device/code" \
+  resp=$(curl -sSL -X POST "https://github.com/login/device/code" \
     -H "Accept: application/json" -H "Content-Type: application/json" \
-    -d "{\"client_id\":\"${GH_OAUTH_CLIENT}\",\"scope\":\"repo\"}")
+    -d "{\"client_id\":\"${GH_OAUTH_CLIENT}\",\"scope\":\"repo workflow\"}")
   device_code=$(_gh_json device_code "$resp")
   url=$(_gh_json verification_uri "$resp")
   user_code=$(_gh_json user_code "$resp")
@@ -96,11 +97,16 @@ gh_do_add() {
   say " Waiting for authorization..."
 
   local token=""
+  local tmp_resp
+  tmp_resp=$(mktemp)
   while true; do
-    sleep "$interval"
-    resp=$(curl -fsSL -X POST "https://github.com/login/oauth/access_token" \
+    sleep "$interval" 2>/dev/null || sleep 5
+    curl -sSL \
       -H "Accept: application/json" -H "Content-Type: application/json" \
-      -d "{\"client_id\":\"${GH_OAUTH_CLIENT}\",\"device_code\":\"${device_code}\",\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\"}")
+      -d "{\"client_id\":\"${GH_OAUTH_CLIENT}\",\"device_code\":\"${device_code}\",\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\"}" \
+      "https://github.com/login/oauth/access_token" \
+      > "$tmp_resp" 2>/dev/null || true
+    resp=$(cat "$tmp_resp")
     token=$(_gh_json access_token "$resp")
     [ -n "$token" ] && break
     local err_type
@@ -112,15 +118,20 @@ gh_do_add() {
       [ -n "$new_int" ] && interval="$new_int"
       continue
     fi
-    err "OAuth failed: $(_gh_json error_description "$resp")"
+    local err_desc
+    err_desc=$(_gh_json error_description "$resp")
+    [ -z "$err_desc" ] && err_desc="$(_gh_json error "$resp") ($resp)"
+    rm -f "$tmp_resp"
+    err "OAuth failed: $err_desc"
   done
+  rm -f "$tmp_resp"
 
   local username email
-  resp=$(curl -fsSL "https://api.github.com/user" \
+  resp=$(curl -sSL "https://api.github.com/user" \
     -H "Authorization: Bearer ${token}" -H "Accept: application/json")
   username=$(_gh_json login "$resp")
 
-  resp=$(curl -fsSL "https://api.github.com/user/emails" \
+  resp=$(curl -sSL "https://api.github.com/user/emails" \
     -H "Authorization: Bearer ${token}" -H "Accept: application/json")
   email=$(python3 -c "
 import sys,json
