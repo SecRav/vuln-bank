@@ -781,13 +781,22 @@ jobs:
           now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
           total = len(all_findings)
 
+          def sev_display(sev):
+              return {'ERROR': 'CRITICAL', 'WARNING': 'MEDIUM'}.get(sev, sev)
+
           def md_table(headers, rows):
               if not rows:
                   return '_No findings._'
               out = ['| ' + ' | '.join(headers) + ' |',
                      '|' + '|'.join('---' for _ in headers) + '|']
               for row in rows:
-                  out.append('| ' + ' | '.join(esc(row.get(h, '')) for h in headers) + ' |')
+                  cells = []
+                  for h in headers:
+                      v = row.get(h, '')
+                      if h == 'severity':
+                          v = sev_display(v)
+                      cells.append(esc(v))
+                  out.append('| ' + ' | '.join(cells) + ' |')
               return '\n'.join(out)
 
           repo = os.environ.get('GITHUB_REPOSITORY', '')
@@ -853,7 +862,7 @@ jobs:
                   if key in seen:
                       continue
                   seen.add(key)
-                  lines.append('- **%s** (%s) - %s' % (esc(f['id']), esc(f['severity']), esc(f.get('plain', ''))))
+                  lines.append('- **%s** (%s) - %s' % (esc(f['id']), esc(sev_display(f['severity'])), esc(f.get('plain', ''))))
               lines.append('')
               lines.append('For full technical detail (exact file, line, CWE, remediation link), see the tables below or the HTML report.')
               lines.append('')
@@ -953,7 +962,7 @@ jobs:
               return 'other'
 
           def badge(sev):
-              return '<span class="badge %s">%s</span>' % (sev_cls(sev), h(sev))
+              return '<span class="badge %s">%s</span>' % (sev_cls(sev), h(sev_display(sev)))
 
           def html_row(f):
               loc = h(f['file']) + ((':%s' % h(f['line'])) if f['line'] else '')
