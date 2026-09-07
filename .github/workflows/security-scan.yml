@@ -1051,6 +1051,10 @@ jobs:
           score_cls = ('critical' if score < 55 else 'high' if score < 85 else '')
           stats += '<div class="stat score"><div class="n %s">%d<span class="pct">/100</span></div><div class="l">Security Score (%s)</div></div>' % (score_cls, score, grade)
           stats += '<div class="stat"><div class="n %s">%d</div><div class="l">Total</div></div>' % (worst_total, total)
+          stats += '<div class="stat"><div class="n critical">%d</div><div class="l">Critical</div></div>' % sev_counts['critical']
+          stats += '<div class="stat"><div class="n high">%d</div><div class="l">High</div></div>' % sev_counts['high']
+          stats += '<div class="stat"><div class="n medium">%d</div><div class="l">Medium</div></div>' % sev_counts['medium']
+          stats += '<div class="stat"><div class="n low">%d</div><div class="l">Low</div></div>' % sev_counts['low']
 
           sections = ''
           sections += tool_section('Semgrep (SAST) - all severities', sem_findings)
@@ -1081,7 +1085,7 @@ jobs:
           .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
           .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
           .stat .n{font-size:26px;font-weight:800}
-          .stat .n.critical{color:#b91c1c}.stat .n.high{color:#ea580c}
+          .stat .n.critical{color:#b91c1c}.stat .n.high{color:#ea580c}.stat .n.medium{color:#a16207}.stat .n.low{color:#475569}
           .stat .pct{font-size:14px;color:var(--muted);font-weight:600;margin-left:2px}
           .stat.score{background:linear-gradient(180deg,#111827,#1f2937);border-color:#111827}
           .stat.score .n{color:#34d399}
