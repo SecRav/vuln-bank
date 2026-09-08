@@ -960,6 +960,10 @@ jobs:
               'counts': sev_counts,
               'total': total,
               'run_url': run_url,
+              'health': {
+                  'ok': all_ok,
+                  'scanners': [{'name': name, 'ok': ok} for name, ok in scanners],
+              },
               'top': [{'severity': f['severity'], 'id': f['id'],
                        'file': f['file'], 'line': f['line']} for f in top],
           }
@@ -1280,7 +1284,7 @@ jobs:
       # Critical/High findings. Requires TEAMS_WEBHOOK_URL repo secret.
       # Default branch only. Alerting failures never fail the scan.
       # ------------------------------------------------------------------
-      - name: Notify Teams on critical findings
+      - name: Notify Teams (findings / all-clear / scan-degraded)
         if: always() && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         continue-on-error: true
         env:
@@ -1303,20 +1307,44 @@ jobs:
 
           crit = a.get('counts', {}).get('critical', 0)
           high = a.get('counts', {}).get('high', 0)
-          if crit == 0 and high == 0:
-              print('No Critical/High findings - no Teams alert sent.')
-              sys.exit(0)
+          med = a.get('counts', {}).get('medium', 0)
+          health = a.get('health') or {}
+          failed = [s['name'] for s in health.get('scanners', []) if not s.get('ok')]
+          scans_ok = health.get('ok', True) and not failed
 
-          color = 'CC0000' if crit else 'ED8936'
+          if crit > 0 or high > 0:
+              status, color, headline = 'ACTION REQUIRED', 'CC0000', 'Critical/High findings - fix now'
+          elif not scans_ok:
+              status, color, headline = 'SCAN DEGRADED', 'ED8936', 'Scan incomplete - scanner(s) failed, investigate'
+          else:
+              status, color, headline = 'ALL CLEAR', '2FA55A', 'No Critical/High findings'
+
           top_blocks = []
-          for t in a.get('top', []):
-              loc = t['file'] + (':%s' % t['line'] if t['line'] else '')
-              top_blocks.append({
-                  'type': 'TextBlock', 'wrap': True, 'spacing': 'None',
-                  'text': '**%s** %s | %s' % (t['severity'], t['id'], loc)})
+          if a.get('top'):
+              for t in a['top']:
+                  loc = t['file'] + (':%s' % t['line'] if t['line'] else '')
+                  top_blocks.append({
+                      'type': 'TextBlock', 'wrap': True, 'spacing': 'None',
+                      'text': '**%s** %s | %s' % (t['severity'], t['id'], loc)})
+          else:
+              top_blocks.append({'type': 'TextBlock', 'wrap': True, 'spacing': 'None',
+                                 'text': 'No findings above Medium.'})
+
+          facts = [
+              {'title': 'Status', 'value': status},
+              {'title': 'Repository', 'value': a['repo']},
+              {'title': 'Critical', 'value': str(crit)},
+              {'title': 'High', 'value': str(high)},
+              {'title': 'Medium', 'value': str(med)},
+              {'title': 'Total in report', 'value': str(a.get('total', 0))},
+          ]
+          if failed:
+              facts.append({'title': 'Failed scanners', 'value': ', '.join(failed)})
+
+          summary = 'Security scan: %s - %s - score %s/100 (%s)' % (a['repo'], status, a['score'], a['grade'])
           card = {
               'type': 'message',
-              'summary': 'Security scan: %s - score %s/100 (%s) - %d Critical, %d High' % (a['repo'], a['score'], a['grade'], crit, high),
+              'summary': summary,
               'attachments': [{
                   'contentType': 'application/vnd.microsoft.card.adaptive',
                   'contentUrl': None,
@@ -1324,19 +1352,12 @@ jobs:
                       'type': 'AdaptiveCard', 'version': '1.4',
                       'msteams': {'width': 'Full'},
                       'body': [
-                          {'type': 'TextBlock', 'wrap': True, 'size': 'Large', 'weight': 'Bolder',
-                           'text': 'Security scan: %s - score %s/100 (%s)' % (a['repo'], a['score'], a['grade'])},
+                          {'type': 'TextBlock', 'wrap': True, 'size': 'Large', 'weight': 'Bolder', 'color': color,
+                           'text': '%s - security scan: %s' % (status, a['repo'])},
                           {'type': 'TextBlock', 'wrap': True, 'isSubtle': True, 'spacing': 'None',
-                           'text': 'branch %s - commit %s - %s' % (a['branch'], a['commit'], a['event'])},
-                          {'type': 'FactSet', 'facts': [
-                              {'title': 'Repository', 'value': a['repo']},
-                              {'title': 'Critical', 'value': str(crit)},
-                              {'title': 'High', 'value': str(high)},
-                              {'title': 'Medium', 'value': str(a.get('counts', {}).get('medium', 0))},
-                              {'title': 'Total in report', 'value': str(a.get('total', 0))},
-                          ]},
-                          {'type': 'TextBlock', 'wrap': True, 'weight': 'Bolder',
-                           'text': 'Top findings'},
+                           'text': '%s - branch %s - commit %s - score %s/100 (%s)' % (headline, a['branch'], a['commit'], a['score'], a['grade'])},
+                          {'type': 'FactSet', 'facts': facts},
+                          {'type': 'TextBlock', 'wrap': True, 'weight': 'Bolder', 'text': 'Top findings'},
                       ] + top_blocks,
                       'actions': [{
                           'type': 'Action.OpenUrl',
@@ -1350,7 +1371,7 @@ jobs:
           req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
           try:
               with urllib.request.urlopen(req, timeout=15) as resp:
-                  print('Teams alert sent (HTTP %s).' % resp.status)
+                  print('Teams alert sent (HTTP %s): %s' % (resp.status, status))
           except Exception as e:
               print('Teams alert failed (non-blocking): %s' % e)
           PY
