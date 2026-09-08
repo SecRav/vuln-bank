@@ -1316,8 +1316,10 @@ jobs:
               status, color, headline = 'ACTION REQUIRED', 'CC0000', 'Critical/High findings - fix now'
           elif not scans_ok:
               status, color, headline = 'SCAN DEGRADED', 'ED8936', 'Scan incomplete - scanner(s) failed, investigate'
+          elif med > 0:
+              status, color, headline = 'NO CRITICAL/HIGH - %d MEDIUM OPEN' % med, 'ED8936', '%d Medium findings remain - backlog, not all clear' % med
           else:
-              status, color, headline = 'ALL CLEAR', '2FA55A', 'No Critical/High findings'
+              status, color, headline = 'ALL CLEAR', '2FA55A', 'No findings - scan clean'
 
           top_blocks = []
           if a.get('top'):
