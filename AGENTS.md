@@ -54,14 +54,26 @@ env:
 
 ### 3. Gitleaks (secrets)
 ```bash
-if [ -f .gitleaks.toml ]; then
-  ./gitleaks dir --config .gitleaks.toml ...
-else
-  ./gitleaks dir ...   # defaults only
-fi
+# Scans ONLY the clean checkout ($GITHUB_WORKSPACE).
+# Reports are written to $RUNNER_TEMP (outside the scanned source) and
+# copied into the workspace only after BOTH scans finish.
+SOURCE="$GITHUB_WORKSPACE"
+./gitleaks dir --config "$SOURCE/.gitleaks.toml" \
+  --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" \
+  --exit-code 0 --no-banner --log-level warn "$SOURCE"
+# ...SARIF run also writes to $RUNNER_TEMP, then both are `cp`'d in.
 ```
 - Downloads pinned binary (v8.30.1), verifies SHA256 checksum.
 - `.gitleaks.toml` is optional — extends defaults with allowlists.
+- **Always scan `$GITHUB_WORKSPACE`, never a relative `.` path.**
+- **Never let gitleaks write its own report inside the scanned source**, and
+  make sure it never re-scans a previous run's `gitleaks.json`/`gitleaks.sarif`.
+  If it does, gitleaks re-detects the secret strings stored inside its own
+  report files and the same findings **self-propagate on every run** — even if
+  the real files no longer contain them. (This happened here: an early scan of a
+  *different* Python/Ruby repo baked `DB_PASSWORD=...` and `cafebabe:deadbeef`
+  into a report, then gitleaks kept re-reporting `README.md:574/47` forever,
+  even though this repo's README is one line.)
 
 ### 4. Trivy (dependencies)
 ```bash
@@ -85,10 +97,17 @@ if: hashFiles('**/Dockerfile*') != ''
 
 ### 6. Checkov (IaC)
 ```bash
-checkov --directory . --skip-path gitleaks.json --skip-path semgrep.json ... || true
+checkov --directory . \
+  --skip-check CKV_SECRET_6 \
+  --skip-path gitleaks.json --skip-path semgrep.json ... || true
 ```
 - `|| true`: checkov exits non-zero when findings exist (its normal behavior).
 - `--skip-path` for all our artifacts so scanners never flag each other.
+- `--skip-check CKV_SECRET_6`: this rule flags the **key name** `clientSecret` /
+  `ClientSecret` even when the value is a placeholder like `YOUR_SSO_CLIENT_SECRET`.
+  On projects that keep placeholder config out of real secret stores this is a
+  reliable false-positive factory, so it's skipped here. If a repo needs real
+  secret detection, remove this flag.
 
 ### 7. Report Generator (Python heredoc)
 The Python block:
@@ -304,6 +323,8 @@ The Python script prints the Adaptive Card payload if the workflow sends it.
 |---------|-------|-----|
 | Semgrep shows "oss-fallback" | Pro token invalid or rate-limited | Check `SEMGREP_APP_TOKEN` is valid |
 | Gitleaks finds test keys | No `.gitleaks.toml` allowlist | Add `.gitleaks.toml` with `useDefault = true` + allowlist |
+| Same gitleaks finding on every run (even fake line in README) | gitleaks re-scanning its own report files | Keep reports in `$RUNNER_TEMP`, `rm -f` stale reports before scanning, scan `$GITHUB_WORKSPACE` only |
+| Checkov flags placeholder secrets (CKV_SECRET_6) | Rule fires on key names like `clientSecret` even with `YOUR_*_SECRET` placeholders | Already handled via `--skip-check CKV_SECRET_6` |
 | Checkov step looks "failed" | `|| true` was removed | Re-add `|| true` to the checkov command |
 | Trivy "NO OUTPUT" | Binary download failed | Check network; increase `--max-time` in curl |
 | Teams card not posting | Secret missing or wrong URL | Verify `TEAMS_WEBHOOK_URL` in repo secrets; check Power Automate flow is active |
@@ -319,6 +340,7 @@ The Python script prints the Adaptive Card payload if the workflow sends it.
 | Never fail the build | Security findings are informational; blocking deployment on false positives is worse than shipping them |
 | `continue-on-error: true` on every step | Even if a scanner crashes, the rest still runs |
 | Skip own artifacts from scanners | Prevents scanners from flagging each other's output (gitleaks.json triggers CKV_SECRET_6, etc.) |
+| Gitleaks reports written outside the scan source | Stops gitleaks from re-detecting strings inside its own/stale report files, which otherwise self-propagates findings forever |
 | LOW excluded from report, included in score | Keeps the report actionable; score is still accurate |
 | Score penalizes severity not count | 1 critical (−8) hurts more than 8 lows (−4) — reflects real risk |
 | Issues auto-close on fix | No manual cleanup; finding is gone → issue is gone |

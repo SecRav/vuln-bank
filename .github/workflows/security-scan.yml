@@ -220,25 +220,36 @@ jobs:
       - name: Gitleaks scan (JSON report)
         continue-on-error: true
         run: |
-          # Scan only the clean checkout ($GITHUB_WORKSPACE). Never let the
-          # source default to a possibly-polluted relative path, which can
-          # pick up foreign/stale content and produce false positives.
+          # Scan the clean checkout ($GITHUB_WORKSPACE) only. The report is
+          # written OUTSIDE the scanned source ($RUNNER_TEMP) so gitleaks
+          # never re-scans its own - or any stale - previous output, which
+          # is what made old findings self-propagate between runs. Both
+          # reports are staged into the workspace by the SARIF step below,
+          # AFTER both scans have finished.
+          mkdir -p "$RUNNER_TEMP"
           SOURCE="$GITHUB_WORKSPACE"
           if [ -f "$SOURCE/.gitleaks.toml" ]; then
-            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            ./gitleaks dir --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
 
       - name: Gitleaks scan (SARIF for Code Scanning)
         continue-on-error: true
         run: |
+          # Delete any staged report left in the workspace by an earlier run
+          # so it is never included in this scan, then scan. Reports land in
+          # $RUNNER_TEMP (outside the source) and are copied in afterwards.
+          rm -f "$GITHUB_WORKSPACE/gitleaks.json" "$GITHUB_WORKSPACE/gitleaks.sarif"
           SOURCE="$GITHUB_WORKSPACE"
           if [ -f "$SOURCE/.gitleaks.toml" ]; then
-            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            ./gitleaks dir --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
+          # Stage both reports where later aggregation/upload steps expect.
+          cp "$RUNNER_TEMP/gitleaks.json" "$GITHUB_WORKSPACE/gitleaks.json" 2>/dev/null || true
+          cp "$RUNNER_TEMP/gitleaks.sarif" "$GITHUB_WORKSPACE/gitleaks.sarif" 2>/dev/null || true
 
       # ------------------------------------------------------------------
       # Checkov (IaC) - free OSS, no login. Scans Dockerfile + GitHub
