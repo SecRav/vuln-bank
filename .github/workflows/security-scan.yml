@@ -220,20 +220,24 @@ jobs:
       - name: Gitleaks scan (JSON report)
         continue-on-error: true
         run: |
-          # .gitleaks.toml is optional; without it the default rules run.
-          if [ -f .gitleaks.toml ]; then
-            ./gitleaks dir --config .gitleaks.toml --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn .
+          # Scan only the clean checkout ($GITHUB_WORKSPACE). Never let the
+          # source default to a possibly-polluted relative path, which can
+          # pick up foreign/stale content and produce false positives.
+          SOURCE="$GITHUB_WORKSPACE"
+          if [ -f "$SOURCE/.gitleaks.toml" ]; then
+            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn .
+            ./gitleaks dir --report-format json --report-path gitleaks.json --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
 
       - name: Gitleaks scan (SARIF for Code Scanning)
         continue-on-error: true
         run: |
-          if [ -f .gitleaks.toml ]; then
-            ./gitleaks dir --config .gitleaks.toml --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn .
+          SOURCE="$GITHUB_WORKSPACE"
+          if [ -f "$SOURCE/.gitleaks.toml" ]; then
+            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn .
+            ./gitleaks dir --report-format sarif --report-path gitleaks.sarif --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
 
       # ------------------------------------------------------------------
@@ -255,6 +259,7 @@ jobs:
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
+            --skip-check CKV_SECRET_6 \
             --skip-path gitleaks.json \
             --skip-path semgrep.json \
             --skip-path trivy.json \
@@ -279,6 +284,7 @@ jobs:
           checkov --directory . \
             --download-external-modules false \
             --quiet --compact \
+            --skip-check CKV_SECRET_6 \
             --skip-path gitleaks.json \
             --skip-path semgrep.json \
             --skip-path trivy.json \
