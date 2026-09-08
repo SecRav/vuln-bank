@@ -210,6 +210,11 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          # Install OUTSIDE $GITHUB_WORKSPACE: the binary/tarball embed gitleaks'
+          # own test fixtures. If they sit inside the scanned source, gitleaks
+          # detects them every run and reports phantom findings.
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          cd "$RUNNER_TEMP/gitleaks-bin"
           curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -fsSL -o gitleaks-checksums.txt "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           EXPECTED=$(grep -F "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks-checksums.txt | awk '{print $1}')
@@ -220,18 +225,18 @@ jobs:
       - name: Gitleaks scan (JSON report)
         continue-on-error: true
         run: |
-          # Scan the clean checkout ($GITHUB_WORKSPACE) only. The report is
-          # written OUTSIDE the scanned source ($RUNNER_TEMP) so gitleaks
-          # never re-scans its own - or any stale - previous output, which
-          # is what made old findings self-propagate between runs. Both
-          # reports are staged into the workspace by the SARIF step below,
-          # AFTER both scans have finished.
+          # Scan the clean checkout ($GITHUB_WORKSPACE) only. The binary
+          # lives in $RUNNER_TEMP (installed outside the source), and
+          # reports are written outside the scanned source too, so gitleaks
+          # never scans its own binary or - stale - previous output, which
+          # is what produced phantom findings on every run. Both reports
+          # are staged into the workspace by the SARIF step below.
           mkdir -p "$RUNNER_TEMP"
           SOURCE="$GITHUB_WORKSPACE"
           if [ -f "$SOURCE/.gitleaks.toml" ]; then
-            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir --config "$SOURCE/.gitleaks.toml" --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
 
       - name: Gitleaks scan (SARIF for Code Scanning)
@@ -243,9 +248,9 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/gitleaks.json" "$GITHUB_WORKSPACE/gitleaks.sarif"
           SOURCE="$GITHUB_WORKSPACE"
           if [ -f "$SOURCE/.gitleaks.toml" ]; then
-            ./gitleaks dir --config "$SOURCE/.gitleaks.toml" --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir --config "$SOURCE/.gitleaks.toml" --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           else
-            ./gitleaks dir --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
+            "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir --report-format sarif --report-path "$RUNNER_TEMP/gitleaks.sarif" --exit-code 0 --no-banner --log-level warn "$SOURCE"
           fi
           # Stage both reports where later aggregation/upload steps expect.
           cp "$RUNNER_TEMP/gitleaks.json" "$GITHUB_WORKSPACE/gitleaks.json" 2>/dev/null || true
