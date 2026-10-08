@@ -1208,10 +1208,14 @@ jobs:
           .help{font-size:13px;color:#374151;margin:0}
           footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
           /* Print stylesheet: browser Print > Save as PDF renders a clean,
-             multi-page report. Keeps near-screen font sizes (no shrinking),
-             hides interactive controls, lets tables flow across pages, repeats
-             table headers on each page, and only avoids breaking inside a
-             single table row (never whole sections, which creates blanks). */
+             multi-page report. Landscape + narrow margins give 6-column
+             tables room to breathe (portrait squeezes them so cells wrap
+             character-by-character). Keeps near-screen font sizes (no
+             shrinking), hides interactive controls, lets tables flow across
+             pages, repeats table headers on each page, and only avoids
+             breaking inside a single table row (never whole sections, which
+             creates blanks). */
+          @page{size:A4 landscape;margin:12mm 10mm}
           @media print {
             body{background:#fff;font-size:13px}
             .topbar{background:#111827;-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:16px 0 12px}
