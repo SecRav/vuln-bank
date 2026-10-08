@@ -8,10 +8,24 @@ How this pipeline was built, why each piece exists, and how to replicate it.
 
 Every time code is pushed (or a PR is opened), this workflow runs five free security scanners, produces a report, creates GitHub Issues for each finding, and optionally sends a Teams alert. It never blocks deployment.
 
+### Triggers and scan target
+
+One workflow, two behaviors — decided by **how it was started**:
+
+| Trigger | Worktree | Scan target |
+|---------|----------|-------------|
+| **Auto**: `push`, `pull_request`, nightly cron (06:00) | synced to **latest `main`** (stale/un-merged branch still scans fresh production code) | latest default branch |
+| **Manual**: `workflow_dispatch` (Run workflow button) | left exactly as checked out — **no sync** | whatever ref you pick in the dropdown |
+
+Nothing is hardcoded to one branch: manual runs scan any ref on demand, and
+auto runs always reflect the current default branch. The report states which
+code was actually scanned (`Scanned code:` / `Scanned commit:` lines).
+
 ```
-push/PR → Security Scan workflow → five scanners → HTML/MD report
-                                                  → GitHub Issues (per finding)
-                                                  → Teams Adaptive Card (Critical/High only)
+auto (push/PR/cron)  ─┐
+                      ├─→ Security Scan workflow → five scanners → HTML/MD report
+manual (pick a ref)  ─┘                                  → GitHub Issues (default branch runs)
+                                                          → Teams card (default branch runs)
 ```
 
 ---
@@ -35,12 +49,46 @@ push/PR → Security Scan workflow → five scanners → HTML/MD report
 
 ## Workflow Structure (Step by Step)
 
-### 1. Checkout + Python setup
+### 1. Checkout + main sync + Python setup
 ```yaml
 - uses: actions/checkout@v4
+  with:
+    fetch-depth: 0        # full history so origin/main is available
+
+# AUTO runs only (push/PR/cron): reset worktree to latest main,
+# then restore security-only config files from the running branch
+- name: Sync worktree to latest main (keep security config)
+  if: github.event_name != 'workflow_dispatch'
+  run: |
+    git fetch origin main
+    cp -r .gitleaks.toml .semgrepignore .semgrep "$RUNNER_TEMP/security-config/"
+    git reset --hard origin/main
+    cp -r "$RUNNER_TEMP/security-config/." .
+    echo "SCAN_REF=origin/main" >> "$GITHUB_ENV"
+    echo "SCAN_SHA=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
+
+# MANUAL runs only (workflow_dispatch): no sync - scan the selected ref
+- name: Record scanned ref (manual run - scan selected ref as-is)
+  if: github.event_name == 'workflow_dispatch'
+  run: |
+    echo "SCAN_REF=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+    echo "SCAN_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
 - uses: actions/setup-python@v5
 ```
 Python is needed for Semgrep, Checkov, and the report generator.
+
+**Why the sync:** a security branch (or any stale branch) may be days behind
+`main`. Without it, a run started from that branch would scan old code. The
+reset guarantees auto runs always scan the **freshest production code**.
+The config files (`/.gitleaks.toml`, `/.semgrepignore`, `/.semgrep/`) may only
+exist on the security branch, so they are saved before the reset and restored
+afterward — the scanners need them even though `main` doesn't have them yet.
+
+**Why no sync on manual runs:** `workflow_dispatch` is the "normal" behavior —
+scan exactly the ref chosen in the Run-workflow dropdown. This keeps the scan
+target never hardcoded to one branch (an old branch, a feature branch, etc.
+can all be scanned on demand).
 
 ### 2. Semgrep (SAST)
 ```yaml
@@ -222,9 +270,22 @@ The workflow builds an Adaptive Card JSON and POSTs it:
 ```
 
 ### When does it alert?
-- **Critical + High > 0** → sends the card.
-- **No Critical or High** → skips silently (no notification noise).
-- **No TEAMS_WEBHOOK_URL secret** → skips silently.
+The workflow **always sends a card** on default-branch runs (never silent) —
+one of four states, chosen from `alert.json`:
+
+| State | Condition | Card color |
+|-------|-----------|------------|
+| **ACTION REQUIRED** | Critical or High > 0 | red |
+| **NO CRITICAL/HIGH - N MEDIUM OPEN** | 0 crit/high but Medium > 0 | amber |
+| **ALL CLEAR** | **zero** findings total + all scanners ran | green |
+| **SCAN DEGRADED** | a scanner failed/skipped (`health.ok` false) | orange |
+
+- **No TEAMS_WEBHOOK_URL secret** → skips silently (step exits early).
+- **PR runs** → skipped (only default-branch runs alert).
+- Rationale for never being silent: a quiet run is ambiguous — it could mean
+  "clean" or "everything broke." An explicit card disambiguates, and
+  "ALL CLEAR" is reserved for genuinely zero findings so it can't be waved
+  away while a Medium backlog exists.
 
 ---
 
@@ -328,6 +389,7 @@ The Python script prints the Adaptive Card payload if the workflow sends it.
 | Checkov step looks "failed" | `|| true` was removed | Re-add `|| true` to the checkov command |
 | Trivy "NO OUTPUT" | Binary download failed | Check network; increase `--max-time` in curl |
 | Teams card not posting | Secret missing or wrong URL | Verify `TEAMS_WEBHOOK_URL` in repo secrets; check Power Automate flow is active |
+| Report shows stale code (branch behind main) | Should not happen on auto runs — they reset to `origin/main` first | Check the run log for the "Synced worktree to origin/main" line; on manual runs this is expected (scan target = selected ref) |
 | Issues not created | Workflow runs on a PR branch | Issues sync only runs on default branch |
 | act fails with "unexpected client error" | Docker can't reach GitHub | Use `catthehacker/ubuntu:act-latest` image (pre-cached); ensure Docker has network access |
 
@@ -338,6 +400,9 @@ The Python script prints the Adaptive Card payload if the workflow sends it.
 | Decision | Why |
 |----------|-----|
 | Never fail the build | Security findings are informational; blocking deployment on false positives is worse than shipping them |
+| Auto runs sync worktree to latest default branch | A run started from a stale/un-merged branch must still scan fresh production code — otherwise the report lies about what's currently deployed |
+| Manual runs scan the selected ref (no sync) | Keeps the scan target never hardcoded; any ref can be scanned on demand with the Run-workflow button |
+| One workflow, two `if:` steps — not two yml files | Two files would duplicate ~1700 lines; a fix or new rule would have to be applied twice (×7 repos when rolled out). One `github.event_name` check switches behavior |
 | `continue-on-error: true` on every step | Even if a scanner crashes, the rest still runs |
 | Skip own artifacts from scanners | Prevents scanners from flagging each other's output (gitleaks.json triggers CKV_SECRET_6, etc.) |
 | Gitleaks reports written outside the scan source | Stops gitleaks from re-detecting strings inside its own/stale report files, which otherwise self-propagates findings forever |
@@ -345,7 +410,7 @@ The Python script prints the Adaptive Card payload if the workflow sends it.
 | Score penalizes severity not count | 1 critical (−8) hurts more than 8 lows (−4) — reflects real risk |
 | Issues auto-close on fix | No manual cleanup; finding is gone → issue is gone |
 | Human-closed issues stay closed | False positives/wontfix can be dismissed permanently |
-| Teams alerts only on Critical/High | No notification noise for low-severity findings |
+| Teams alerts always sent (4 states: required / medium-open / all-clear / degraded) | Silence is ambiguous — could mean "clean" or "scanner broke"; explicit card disambiguates, and ALL CLEAR is reserved for zero findings |
 | Pinned tool versions | Reproducible scans; no surprise breakage from upstream changes |
 
 ---
