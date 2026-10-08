@@ -98,13 +98,18 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin main
-          mkdir -p "${RUNNER_TEMP}/security-config"
-          cp -r .gitleaks.toml .semgrepignore .semgrep "${RUNNER_TEMP}/security-config/"
+          CFG="${RUNNER_TEMP}/security-config"
+          mkdir -p "$CFG"
+          # Config files are optional (repos differ) - save only what exists.
+          for f in .gitleaks.toml .semgrepignore .semgrep; do
+            if [ -e "$f" ]; then cp -r "$f" "$CFG/"; fi
+          done
           git reset --hard "origin/main"
-          cp -r "${RUNNER_TEMP}/security-config/." .
+          # Restore whatever was saved; skip restore if nothing was saved.
+          if [ -n "$(ls -A "$CFG")" ]; then cp -r "$CFG/." . ; fi
           echo "SCAN_REF=origin/main" >> "$GITHUB_ENV"
           echo "SCAN_SHA=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
-          echo "Synced worktree to origin/main ($(git rev-parse --short origin/main)) - config files restored from security-scan branch."
+          echo "Synced worktree to origin/main ($(git rev-parse --short origin/main)) - security config files restored if present."
 
       - name: Record scanned ref (manual run - scan selected ref as-is)
         if: github.event_name == 'workflow_dispatch'
